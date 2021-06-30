@@ -1,0 +1,248 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Wed Nov 18 10:05:47 2020
+
+@author: Gian Maria
+@description: Processes GTD data into bipartite into matrices of data for 
+each of views of the attacks. Script also removes outliers and cleans the data
+"""
+
+import numpy as np
+import pandas as pd
+from functools import reduce
+
+''' IMPORTING THE ENTIRE GTD FIRST'''
+gtd = pd.read_csv('gtd_all.csv',delimiter=',', index_col=0, engine='python')
+gtd = gtd.rename({'iyear':'year', 'imonth': 'month', 'iday': 'day'}, axis=1)
+
+
+''' substituting days and months = 0 with random numbers 
+between 1 and 29 (for days) and 1 and 12 (for months) will 
+produce slightly different results in the inputation of 
+missing dates. It has to be noted however that out of the 34,893
+attacks in the two datasets, only 10 have "0" as days, thus the random
+procedure does not have a considerable effect on the creation of
+the dataset'''
+
+gtd.loc[gtd['month'] == 0,'month'] = np.random.randint(1,12, 
+                                                       len(gtd.loc[gtd['month'] == 0]))
+gtd.loc[gtd['day'] == 0,'day'] = np.random.randint(1,29, 
+                                                   len(gtd.loc[gtd['day'] == 0]))
+
+gtd['date']=pd.to_datetime(gtd[['year', 'month', 'day']])
+
+
+
+# remove doubtful terrorist attacks
+gtd = gtd[gtd.doubtterr ==0]
+
+
+# remove unknown perpetrators
+gtd = gtd[gtd['gname'] != 'Unknown']
+# gtd = gtd[gtd['gname'] != 'Gunmen']
+# gtd = gtd[gtd['gname'] != 'Separatists']
+# gtd = gtd[gtd['gname'] != 'Militants']
+# gtd = gtd[gtd['gname'] != 'Tribesmen']
+# gtd = gtd[gtd['gname'] != 'Anti-Muslim Extremists']
+
+
+# remove attacks prior to 1997
+gtd= gtd[gtd['year']>1996]
+
+
+# create dataset with n of attack per group recorded in gname
+list_groups = gtd['gname'].value_counts()
+list_groups = pd.DataFrame(list_groups)
+list_groups.reset_index(inplace=True)
+list_groups = list_groups.rename({'index':'Group','gname':'N'}, axis=1)
+
+
+# create dataset with n of attack per group recorded in gname2
+list_groups2 = gtd['gname2'].value_counts()
+list_groups2 = pd.DataFrame(list_groups2)
+list_groups2.reset_index(inplace=True)
+list_groups2 = list_groups2.rename({'index':'Group','gname2':'N2'}, axis=1)
+
+
+# create dataset with n of attack per group recorded in gname3
+list_groups3 = gtd['gname3'].value_counts()
+list_groups3 = pd.DataFrame(list_groups3)
+list_groups3.reset_index(inplace=True)
+list_groups3 = list_groups3.rename({'index':'Group','gname3':'N3'}, axis=1)
+
+
+# join to have unique list
+groups_join = pd.merge(list_groups,  
+                      list_groups2,
+                      on ='Group',  
+                      how ='outer') 
+
+joined_groups = pd.merge(groups_join,  
+                      list_groups3,
+                      on ='Group',  
+                      how ='outer') 
+
+
+joined_groups = joined_groups.fillna(0)
+joined_groups['Tot_Attacks']=joined_groups['N']+joined_groups['N2']+joined_groups['N3']
+joined_groups= joined_groups.rename({'Group':'gname'}, axis=1)
+
+
+'''start preparing separate datasets to be merged in a second phase, by removing alla na rows corresponding 
+to gname, gname2, gname3 and create dedicated datasets'''
+
+attack1 = gtd[gtd['gname'].notna()]
+attack2 = gtd[gtd['gname2'].notna()]
+attack3 = gtd[gtd['gname3'].notna()]
+
+# drop gname2 and gname3 when we are dealing with attack1, etc.
+attack1 = attack1.drop(['gname2', 'gname3'], axis=1)
+attack2 = attack2.drop(['gname', 'gname3'], axis=1)
+attack3 = attack3.drop(['gname', 'gname2'], axis=1)
+
+
+# rename gname2 and gname3 in gname
+attack2 = attack2.rename({'gname2':'gname'}, axis=1)
+attack3 = attack3.rename({'gname3':'gname'}, axis=1)
+
+
+# move all gname columns in a certain position in all three datasets
+col_name = "gname"
+second_col1 = attack1.pop(col_name) # for attack1
+attack1.insert(0, col_name, second_col1)
+
+second_col2 = attack2.pop(col_name) # for attack2
+attack2.insert(0, col_name, second_col2)
+
+
+second_col3 = attack3.pop(col_name) # for attack3
+attack3.insert(0, col_name, second_col3)
+
+
+# create uniques ids based on gname assignment (either gname, gname2, gname 3)
+attack1.reset_index(inplace=True)
+attack1['eventid'] = '1_' + attack1['eventid'].astype(str)
+
+attack2.reset_index(inplace=True)
+attack2['eventid'] = '2_' + attack2['eventid'].astype(str)
+
+attack3.reset_index(inplace=True)
+attack3['eventid'] = '3_' + attack3['eventid'].astype(str)
+
+
+''' create unique dataseta where the nested gname, gname2, gname3 are now a unique column, and ids are 
+"repeated" with a proper sub_id in eventid if the attack involved more than 1 group'''
+
+sep_df = [attack1, attack2, attack3]
+
+all_attacks = pd.concat(sep_df)
+
+
+# vertical look up with "joined_groups" to filter out all those ids that are associated with groups that plotted <n attacks
+all_attacks2 = pd.merge(all_attacks,
+                       joined_groups,
+                       on='gname',
+                       how='inner')
+
+all_attacks2[all_attacks2['Tot_Attacks']>50].count()
+all_attacks_filter = all_attacks2[all_attacks2['Tot_Attacks']>49]
+
+# filter for inconsistent groups (from 43484 attacks to 42671)
+all_attacks_filter = all_attacks_filter[all_attacks_filter['gname'] != 'Gunmen']
+all_attacks_filter = all_attacks_filter[all_attacks_filter['gname'] != 'Separatists']
+all_attacks_filter = all_attacks_filter[all_attacks_filter['gname'] != 'Militants']
+all_attacks_filter = all_attacks_filter[all_attacks_filter['gname'] != 'Tribesmen']
+all_attacks_filter = all_attacks_filter[all_attacks_filter['gname'] != 'Anti-Muslim Extremists']
+
+#all_attacks_filter = all_attacks_filter[all_attacks_filter['year']>1996]
+group_list = all_attacks_filter['gname'].value_counts()
+
+''' restructure dataset around the dimensions we are interested in: weapons, tactics, targets and regions 
+evaluating geographical patterns ex-post '''
+
+ 
+# tactics
+
+tactic1 = all_attacks_filter.groupby(['gname','year','attacktype1_txt']).size().unstack(fill_value=0)
+tactic2 = all_attacks_filter.groupby(['gname','year','attacktype2_txt']).size().unstack(fill_value=0)
+tactic3 = all_attacks_filter.groupby(['gname','year','attacktype3_txt']).size().unstack(fill_value=0)
+
+tacs = [tactic1, tactic2, tactic3]
+
+tactic_total=reduce(lambda x,y: x.add(y, fill_value=0), tacs)
+tactic_total = tactic_total.fillna(0)
+
+# weapons
+weapon1 = all_attacks_filter.groupby(['gname','year','weaptype1_txt']).size().unstack(fill_value=0)
+weapon2 = all_attacks_filter.groupby(['gname','year','weaptype2_txt']).size().unstack(fill_value=0)
+weapon3 = all_attacks_filter.groupby(['gname','year','weaptype3_txt']).size().unstack(fill_value=0)
+weapon4 = all_attacks_filter.groupby(['gname','year','weaptype4_txt']).size().unstack(fill_value=0)
+
+weaps= [weapon1, weapon2, weapon3, weapon4]
+
+weapon_total=reduce(lambda x,y: x.add(y, fill_value=0), weaps)
+weapon_total=weapon_total.fillna(0)
+
+#targets
+target1 = all_attacks_filter.groupby(['gname','year', 'targtype1_txt']).size().unstack(fill_value=0)
+target2 = all_attacks_filter.groupby(['gname','year', 'targtype2_txt']).size().unstack(fill_value=0)
+target3 = all_attacks_filter.groupby(['gname','year', 'targtype3_txt']).size().unstack(fill_value=0)
+
+target = [target1, target2, target3]
+
+target_total=reduce(lambda x,y: x.add(y, fill_value=0), target)
+target_total=target_total.fillna(0)
+
+# region
+region_total = all_attacks_filter.groupby(['gname', 'year', 'region_txt']).size().unstack(fill_value=0)
+region_total=region_total.fillna(0)
+
+
+''' create list of datasets based on the dimensions that we used to restructure
+the datasets, resetting but keeping index for easier handling '''
+
+
+tactic_yearly_list = [x.reset_index(drop=False) for _, x in tactic_total.groupby(['year'])]
+weapon_yearly_list = [x.reset_index(drop=False) for _, x in weapon_total.groupby(['year'])]
+target_yearly_list = [x.reset_index(drop=False) for _, x in target_total.groupby(['year'])]
+region_yearly_list = [x.reset_index(drop=False) for _, x in region_total.groupby(['year'])]
+
+
+# remove "year" column
+for df in tactic_yearly_list:
+    for column in df.columns:
+        if "year" in column:
+            df.drop(column, axis = 1, inplace=True)  
+            
+for df in weapon_yearly_list:
+    for column in df.columns:
+        if "year" in column:
+            df.drop(column, axis = 1, inplace=True)
+
+for df in target_yearly_list:
+    for column in df.columns:
+        if "year" in column:
+            df.drop(column, axis = 1, inplace=True)
+
+for df in region_yearly_list:
+    for column in df.columns:
+        if "year" in column:
+            df.drop(column, axis = 1, inplace=True)            
+
+''' file exportation '''
+
+names = ["1997", "1998", "1999", "2000", "2001", "2002", "2003", "2004", "2005", "2006", 
+         "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016",
+         "2017", "2018"
+         ]
+for name, df in zip(names, weapon_yearly_list):
+    df.to_csv(f'Group x Weapon/{name}.csv', index=False, header=True)
+
+for name, df in zip(names, tactic_yearly_list):
+    df.to_csv(f'Group x Tactic/{name}.csv', index=False, header=True)
+    
+for name, df in zip(names, target_yearly_list):
+    df.to_csv(f'Group x Target/{name}.csv', index=False, header=True)
+
+for name, df in zip(names, region_yearly_list):
+    df.to_csv(f'Group x Region/{name}.csv', index=False, header=True)
